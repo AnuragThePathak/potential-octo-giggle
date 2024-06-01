@@ -10,16 +10,16 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/pkt_cls.h>
 #include <linux/tcp.h>
 #include <bpf/bpf_helpers.h>
 
-// Define a map to store the configurable port
-struct bpf_map_def SEC("maps") drop_port_map = {
-    .type = BPF_MAP_TYPE_ARRAY,
-    .key_size = sizeof(int),
-    .value_size = sizeof(int),
-    .max_entries = 1,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, int);
+    __type(value, int);
+} drop_port_map SEC(".maps");
 
 SEC("tc")
 int drop_tcp_packets(struct __sk_buff *skb) {
@@ -73,6 +73,7 @@ char _license[] SEC("license") = "GPL";
 #include <errno.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <unitstd.h>
 
 #define DROP_PORT_MAP "/sys/fs/bpf/tc/globals/drop_port_map"
 
@@ -111,13 +112,6 @@ int main(int argc, char **argv) {
 clang -O2 -target bpf -c filter.c -o filter.o
 ```
 
-**Compile and run the user space program:**
-
-```
-gcc -o port port.c -lbpf
-./port 4040
-```
-
 **Load the eBPF program using tc:**
 
 ```
@@ -132,7 +126,14 @@ mkdir -p /sys/fs/bpf/tc/globals
 bpftool map pin id <map_id> /sys/fs/bpf/tc/globals/drop_port_map
 ```
 
-<map_id> is the ID of the map, which can be found using `bpftool map show`.
+<map_id> is the ID of the map, which can be found using `bpftool map show`. In many cases, we may first require to first create a map using `bpftool map create` command.
+
+**Compile and run the user space program:**
+
+```
+gcc -o port port.c -lbpf
+./port 4040
+```
 
 ### Problem statement 3: Explain the code snippet
 
