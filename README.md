@@ -4,37 +4,135 @@
 
 **Solution:**
 
+**filter.c**: eBPF program
+
 ```c
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
+#include <bpf/bpf_helpers.h>
 
-#define TARGET_PORT 4040
+// Define a map to store the configurable port
+struct bpf_map_def SEC("maps") drop_port_map = {
+    .type = BPF_MAP_TYPE_ARRAY,
+    .key_size = sizeof(int),
+    .value_size = sizeof(int),
+    .max_entries = 1,
+};
 
-SEC("filter")
-int drop_tcp(struct __sk_buff *skb) {
-    struct ethhdr *eth = bpf_hdr_pointer(skb, ETH_HLEN);
-    if (eth->h_proto != htons(ETH_P_IP)) {
-        return BPF_OK;
+SEC("tc")
+int drop_tcp_packets(struct __sk_buff *skb) {
+    // Load the data from the packet
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+
+    // Check if it's an IP packet
+    if (eth->h_proto != htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    struct iphdr *ip = data + sizeof(struct ethhdr);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+
+    // Check if it's a TCP packet
+    if (ip->protocol != IPPROTO_TCP)
+        return TC_ACT_OK;
+
+    struct tcphdr *tcp = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+    if ((void *)(tcp + 1) > data_end)
+        return TC_ACT_OK;
+
+    // Get the port to drop from the map
+    int key = 0;
+    int *port = bpf_map_lookup_elem(&drop_port_map, &key);
+    if (!port)
+        return TC_ACT_OK;
+
+    // Drop the packet if the destination port matches
+    if (tcp->dest == htons(*port)) {
+        return TC_ACT_SHOT; // Drop the packet
     }
 
-    struct iphdr *ip = bpf_hdr_pointer(skb, ETH_HLEN + sizeof(*eth));
-    if (ip->protocol != IPPROTO_TCP) {
-        return BPF_OK;
-    }
-
-    struct tcphdr *tcp = bpf_hdr_pointer(skb, ETH_HLEN + sizeof(*eth) + sizeof(*ip));
-    int port = ntohs(tcp->dest);
-    if (port == TARGET_PORT) {
-        return BPF_DROP;
-    }
-
-    return BPF_OK;
+    return TC_ACT_OK; // Pass the packet
 }
 
 char _license[] SEC("license") = "GPL";
 ```
+
+**port.c**: User-space program to set the port
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
+#define DROP_PORT_MAP "/sys/fs/bpf/tc/globals/drop_port_map"
+
+void set_drop_port(int port) {
+    int key = 0;
+    int map_fd = bpf_obj_get(DROP_PORT_MAP);
+    if (map_fd < 0) {
+        fprintf(stderr, "Error opening map: %s\n", strerror(errno));
+        return;
+    }
+
+    if (bpf_map_update_elem(map_fd, &key, &port, BPF_ANY) < 0) {
+        fprintf(stderr, "Error updating map: %s\n", strerror(errno));
+    }
+
+    close(map_fd);
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+        return 1;
+    }
+
+    int port = atoi(argv[1]);
+    set_drop_port(port);
+
+    printf("Set drop port to %d\n", port);
+    return 0;
+}
+```
+
+**Compile the eBPF program:**
+
+```
+clang -O2 -target bpf -c filter.c -o filter.o
+```
+
+**Compile and run the user space program:**
+
+```
+gcc -o user_space user_space.c -lbpf
+./user_space 4040
+```
+
+**Load the eBPF program using tc:**
+
+```
+tc qdisc add dev eth0 clsact
+tc filter add dev eth0 ingress bpf da obj tcp_drop.o sec tc
+```
+
+**Pin the map**
+
+```
+mkdir -p /sys/fs/bpf/tc/globals
+bpftool map pin id <map_id> /sys/fs/bpf/tc/globals/drop_port_map
+```
+
+<map_id> is the ID of the map, which can be found using `bpftool map show`.
 
 ### Problem statement 3: Explain the code snippet
 
