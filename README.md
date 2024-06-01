@@ -114,15 +114,15 @@ clang -O2 -target bpf -c filter.c -o filter.o
 **Compile and run the user space program:**
 
 ```
-gcc -o user_space user_space.c -lbpf
-./user_space 4040
+gcc -o port port.c -lbpf
+./port 4040
 ```
 
 **Load the eBPF program using tc:**
 
 ```
 tc qdisc add dev eth0 clsact
-tc filter add dev eth0 ingress bpf da obj tcp_drop.o sec tc
+tc filter add dev eth0 ingress bpf da obj filter.o sec tc
 ```
 
 **Pin the map**
